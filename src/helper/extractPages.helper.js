@@ -5,9 +5,31 @@ import { DEFAULT_HEADERS } from "../configs/header.config.js";
 
 const axiosInstance = axios.create({ headers: DEFAULT_HEADERS });
 
+// Retry with exponential backoff for 503/rate-limit errors
+async function axiosGetWithRetry(url, options = {}, retries = 3, delay = 1500) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await axiosInstance.get(url, options);
+    } catch (err) {
+      const status = err?.response?.status;
+      const isRetryable = [503, 429, 502, 504].includes(status);
+      if (isRetryable && attempt < retries) {
+        console.warn(
+          `[Retry ${attempt}/${retries}] ${status} on ${url} — waiting ${delay}ms`,
+        );
+        await new Promise((r) => setTimeout(r, delay * attempt));
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
 async function extractPage(page, params) {
   try {
-    const resp = await axiosInstance.get(`https://${v1_base_url}/${params}?page=${page}`);
+    const resp = await axiosGetWithRetry(
+      `https://${v1_base_url}/${params}?page=${page}`,
+    );
     const $ = cheerio.load(resp.data);
     const totalPages =
       Number(
@@ -21,9 +43,9 @@ async function extractPage(page, params) {
             .pop() ??
           $(".pre-pagination nav .pagination > .page-item.active a")
             ?.text()
-            ?.trim()
+            ?.trim(),
       ) || 1;
-      
+
     const contentSelector = params.includes("az-list")
       ? ".tab-content"
       : "#main-content";
@@ -34,15 +56,15 @@ async function extractPage(page, params) {
           const showType = $fdiItems
             .filter((_, item) => {
               const text = $(item).text().trim().toLowerCase();
-              return ["tv", "ona", "movie", "ova", "special", "music"].some((type) =>
-                text.includes(type)
+              return ["tv", "ona", "movie", "ova", "special", "music"].some(
+                (type) => text.includes(type),
               );
             })
             .first();
           const poster = $(".film-poster>img", element).attr("data-src");
           const title = $(".film-detail .film-name", element).text();
           const japanese_title = $(".film-detail>.film-name>a", element).attr(
-            "data-jname"
+            "data-jname",
           );
           const description = $(".film-detail .description", element)
             .text()
@@ -62,7 +84,6 @@ async function extractPage(page, params) {
           if (tickRateText.includes("18+")) {
             adultContent = true;
           }
-
           ["sub", "dub", "eps"].forEach((property) => {
             const value = $(`.tick .tick-${property}`, element).text().trim();
             if (value) {
@@ -79,8 +100,8 @@ async function extractPage(page, params) {
             tvInfo,
             adultContent,
           };
-        }
-      )
+        },
+      ),
     );
     return [data, parseInt(totalPages, 10)];
   } catch (error) {

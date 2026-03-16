@@ -4,6 +4,7 @@ import * as cheerio from "cheerio";
 import { v1_base_url } from "../../utils/base_v1.js";
 import { v4_base_url } from "../../utils/base_v4.js";
 import { fallback_1, fallback_2 } from "../../utils/fallback.js";
+import { DEFAULT_HEADERS } from "../../configs/header.config.js";
 
 function fetch_key(data) {
   let key = null;
@@ -15,7 +16,6 @@ function fetch_key(data) {
 
   if (!key) {
     const lkMatch = data.match(/window\._lk_db\s*=\s*\{([^}]+)\}/);
-
     if (lkMatch) {
       key = [...lkMatch[1].matchAll(/:\s*["']([^"']+)["']/g)]
         .map((v) => v[1])
@@ -100,31 +100,42 @@ export async function decryptSources_v1(epID, id, name, type, fallback) {
       const sourceId = sourceIdMatch?.[1];
       if (!sourceId) throw new Error("Unable to extract sourceId from link");
       const new_url = `https://megacloud.blog/embed-2/v3/e-1/${sourceId}?k=1`;
-      const { data: stream_data } = await axios.post(
-        "https://megacloud.zenime.site/get-sources",
-        {
-          embedUrl: new_url,
-        },
-        {
-          headers: {
-            "Content-Type": "application/json",
-          },
-        },
-      );
 
-      decryptedSources = stream_data;
-      // const baseUrlMatch = ajaxLink.match(
-      //   /^(https?:\/\/[^\/]+(?:\/[^\/]+){3})/,
-      // );
-      // if (!baseUrlMatch) throw new Error("Could not extract base URL");
-      // const baseUrl = baseUrlMatch[1];
+      let decryptResponse = null;
 
-      // iframeURL = `${baseUrl}/${sourceId}?k=1&autoPlay=0&oa=0&asi=1`;
+      // Primary proxy
+      try {
+        const { data: stream_data } = await axios.post(
+          "https://megacloud.zenime.site/get-sources",
+          { embedUrl: new_url },
+          { headers: { "Content-Type": "application/json" } },
+        );
+        decryptResponse = stream_data;
+      } catch (primaryErr) {
+        console.warn(
+          `Primary proxy failed (${primaryErr?.response?.status ?? primaryErr.message}), trying fallback proxy...`,
+        );
+        // Fallback: try direct megacloud getSources
+        try {
+          const { data: fallbackData } = await axios.get(
+            `https://megacloud.blog/embed-2/ajax/e-1/getSources?id=${sourceId}`,
+            {
+              headers: {
+                Referer: `https://megacloud.blog/embed-2/v3/e-1/${sourceId}?k=1`,
+                "X-Requested-With": "XMLHttpRequest",
+                ...DEFAULT_HEADERS,
+              },
+            },
+          );
+          decryptResponse = fallbackData;
+        } catch (fallbackErr) {
+          throw new Error(
+            `Both proxies failed. Primary: ${primaryErr.message} | Fallback: ${fallbackErr.message}`,
+          );
+        }
+      }
 
-      // const { data: rawSourceData } = await axios.get(
-      //   `${baseUrl}/getSources?id=${sourceId}`,
-      // );
-      // decryptedSources = rawSourceData;
+      decryptedSources = decryptResponse;
     }
 
     return {
