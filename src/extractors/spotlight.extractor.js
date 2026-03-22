@@ -1,51 +1,54 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
 import { v1_base_url } from "../utils/base_v1.js";
+import { DEFAULT_HEADERS } from "../configs/header.config.js";
 
 async function extractSpotlights() {
   try {
-    const resp = await axios.get(`https://${v1_base_url}/home`);
+    const resp = await axios.get(`https://${v1_base_url}/home`, {
+      headers: DEFAULT_HEADERS,
+    });
     const $ = cheerio.load(resp.data);
 
     const slideElements = $(
-      "div.deslide-wrap > div.container > div#slider > div.swiper-wrapper > div.swiper-slide"
+      "div.deslide-wrap > div.container > div#slider > div.swiper-wrapper > div.swiper-slide",
     );
 
     const promises = slideElements
       .map(async (ind, ele) => {
         const poster = $(ele)
           .find(
-            "div.deslide-item > div.deslide-cover > div.deslide-cover-img > img.film-poster-img"
+            "div.deslide-item > div.deslide-cover > div.deslide-cover-img > img.film-poster-img",
           )
           .attr("data-src");
         const title = $(ele)
           .find(
-            "div.deslide-item > div.deslide-item-content > div.desi-head-title"
+            "div.deslide-item > div.deslide-item-content > div.desi-head-title",
           )
           .text()
           .trim();
         const japanese_title = $(ele)
           .find(
-            "div.deslide-item > div.deslide-item-content > div.desi-head-title"
+            "div.deslide-item > div.deslide-item-content > div.desi-head-title",
           )
           .attr("data-jname")
           .trim();
         const description = $(ele)
           .find(
-            "div.deslide-item > div.deslide-item-content > div.desi-description"
+            "div.deslide-item > div.deslide-item-content > div.desi-description",
           )
           .text()
           .trim();
         const id = $(ele)
           .find(
-            ".deslide-item > .deslide-item-content > .desi-buttons > a:eq(0)"
+            ".deslide-item > .deslide-item-content > .desi-buttons > a:eq(0)",
           )
           .attr("href")
           .split("/")
           .pop();
         const data_id = $(ele)
           .find(
-            ".deslide-item > .deslide-item-content > .desi-buttons > a:eq(0)"
+            ".deslide-item > .deslide-item-content > .desi-buttons > a:eq(0)",
           )
           .attr("href")
           .split("/")
@@ -78,7 +81,7 @@ async function extractSpotlights() {
                 };
               }
               tvInfo[key] = value;
-            })
+            }),
         );
         return {
           id,
