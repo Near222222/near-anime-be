@@ -25,6 +25,18 @@ async function axiosGetWithRetry(url, options = {}, retries = 3, delay = 1500) {
   }
 }
 
+// Jikan fallback for missing posters
+async function getJikanPoster(title) {
+  try {
+    const res = await axios.get(
+      `https://api.jikan.moe/v4/anime?q=${encodeURIComponent(title)}&limit=1`,
+    );
+    return res.data.data[0]?.images?.jpg?.image_url || null;
+  } catch {
+    return null;
+  }
+}
+
 async function extractPage(page, params) {
   try {
     const resp = await axiosGetWithRetry(
@@ -61,10 +73,11 @@ async function extractPage(page, params) {
               );
             })
             .first();
-          const poster =
+          const title = $(".film-detail .film-name", element).text();
+          const posterRaw =
             $(".film-poster>img", element).attr("data-src") ||
             $(".film-poster>img", element).attr("src");
-          const title = $(".film-detail .film-name", element).text();
+          const poster = posterRaw || (await getJikanPoster(title));
           const japanese_title = $(".film-detail>.film-name>a", element).attr(
             "data-jname",
           );
