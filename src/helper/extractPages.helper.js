@@ -61,7 +61,9 @@ async function extractPage(page, params) {
               );
             })
             .first();
-          const poster = $(".film-poster>img", element).attr("data-src");
+          const poster =
+            $(".film-poster>img", element).attr("data-src") ||
+            $(".film-poster>img", element).attr("src");
           const title = $(".film-detail .film-name", element).text();
           const japanese_title = $(".film-detail>.film-name>a", element).attr(
             "data-jname",
