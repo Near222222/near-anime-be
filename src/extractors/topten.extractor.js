@@ -1,10 +1,13 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
 import { v1_base_url } from "../utils/base_v1.js";
+import { DEFAULT_HEADERS } from "../configs/header.config.js";
 
 async function extractTopTen() {
   try {
-    const resp = await axios.get(`https://${v1_base_url}/home`);
+    const resp = await axios.get(`https://${v1_base_url}/home`, {
+      headers: DEFAULT_HEADERS,
+    });
     const $ = cheerio.load(resp.data);
 
     const labels = ["today", "week", "month"];
@@ -12,7 +15,7 @@ async function extractTopTen() {
 
     labels.forEach((label, idx) => {
       const data = $(
-        `#main-sidebar .block_area-realtime .block_area-content ul:eq(${idx})>li`
+        `#main-sidebar .block_area-realtime .block_area-content ul:eq(${idx})>li`,
       )
         .map((index, element) => {
           const number = $(".film-number>span", element).text().trim();
