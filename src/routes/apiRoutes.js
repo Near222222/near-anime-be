@@ -20,6 +20,7 @@ import getVoiceActors from "../controllers/actors.controller.js";
 import getCharacter from "../controllers/characters.controller.js";
 import * as filterController from "../controllers/filter.controller.js";
 import getTopSearch from "../controllers/topsearch.controller.js";
+import { proxyStream } from "../controllers/proxy.controller.js";
 
 export const createApiRoutes = (app, jsonResponse, jsonError) => {
   const createRoute = (path, controllerMethod) => {
@@ -56,23 +57,27 @@ export const createApiRoutes = (app, jsonResponse, jsonError) => {
 
   routeTypes.forEach((routeType) =>
     createRoute(`/api/${routeType}`, (req, res) =>
-      categoryController.getCategory(req, res, routeType)
-    )
+      categoryController.getCategory(req, res, routeType),
+    ),
   );
 
   createRoute("/api/top-ten", topTenController.getTopTen);
   createRoute("/api/info", animeInfoController.getAnimeInfo);
   createRoute("/api/episodes/:id", episodeListController.getEpisodes);
   createRoute("/api/servers/:id", serversController.getServers);
-  createRoute("/api/stream", (req, res) => streamController.getStreamInfo(req, res, false));
-  createRoute("/api/stream/fallback", (req, res) => streamController.getStreamInfo(req, res, true));
+  createRoute("/api/stream", (req, res) =>
+    streamController.getStreamInfo(req, res, false),
+  );
+  createRoute("/api/stream/fallback", (req, res) =>
+    streamController.getStreamInfo(req, res, true),
+  );
   createRoute("/api/search", searchController.search);
   createRoute("/api/filter", filterController.filter);
   createRoute("/api/search/suggest", suggestionsController.getSuggestions);
   createRoute("/api/schedule", scheduleController.getSchedule);
   createRoute(
     "/api/schedule/:id",
-    nextEpisodeScheduleController.getNextEpisodeSchedule
+    nextEpisodeScheduleController.getNextEpisodeSchedule,
   );
   createRoute("/api/random", randomController.getRandom);
   createRoute("/api/random/id", randomIdController.getRandomId);
@@ -80,10 +85,13 @@ export const createApiRoutes = (app, jsonResponse, jsonError) => {
   createRoute("/api/producer/:id", producerController.getProducer);
   createRoute(
     "/api/character/list/:id",
-    characterListController.getVoiceActors
+    characterListController.getVoiceActors,
   );
   createRoute("/api/watchlist/:userId{/:page}", getWatchlist);
   createRoute("/api/actors/:id", getVoiceActors);
   createRoute("/api/character/:id", getCharacter);
   createRoute("/api/top-search", getTopSearch);
+
+  // ✅ Proxy route — i-fetch ang m3u8/segments sa backend para same IP
+  app.get("/api/proxy", proxyStream);
 };
