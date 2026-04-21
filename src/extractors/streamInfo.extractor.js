@@ -10,25 +10,47 @@ export async function extractServers(id) {
     const resp = await axios.get(
       `https://${v1_base_url}/ajax/v2/episode/servers?episodeId=${id}`,
     );
+
     const html = resp.data?.html ?? resp.data;
     const $ = cheerio.load(html);
     const serverData = [];
-    $(".server-item").each((index, element) => {
+
+    // Try primary selector
+    let elements = $(".server-item");
+
+    // Fallback selectors if primary fails
+    if (elements.length === 0) {
+      console.warn("[WARN] No .server-item found, trying .server");
+      elements = $(".server");
+    }
+    if (elements.length === 0) {
+      console.warn("[WARN] No .server found, trying [data-server-id]");
+      elements = $("[data-server-id]");
+    }
+
+    console.log(`[INFO] Found ${elements.length} server elements`);
+
+    elements.each((index, element) => {
       const data_id = $(element).attr("data-id")?.trim();
       const server_id = $(element).attr("data-server-id")?.trim();
       const type = $(element).attr("data-type")?.trim();
-
       const serverName = $(element).find("a").text().trim();
-      serverData.push({
-        type,
-        data_id,
-        server_id,
-        serverName,
-      });
+
+      if (serverName) {
+        console.log(`[DEBUG] Server ${index}: ${serverName} (${type})`);
+        serverData.push({
+          type: type || "raw",
+          data_id,
+          server_id,
+          serverName,
+        });
+      }
     });
+
+    console.log(`[SUCCESS] Extracted ${serverData.length} servers`);
     return serverData;
   } catch (error) {
-    console.log(error);
+    console.error(`[ERROR] extractServers failed: ${error.message}`);
     return [];
   }
 }
