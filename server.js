@@ -6,6 +6,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { createApiRoutes } from "./src/routes/apiRoutes.js";
+import { getGogoEmbed } from "./src/controllers/gogoStream.controller.js";
 
 // ============================================================================
 // IMPORT LOGGING MIDDLEWARE (Optional but recommended)
@@ -144,6 +145,7 @@ log.info("Setting up API routes...");
 createApiRoutes(app, jsonResponse, jsonError);
 log.info("API routes configured");
 
+app.get("/api/gogo/embed", getGogoEmbed);
 // ============================================================================
 // 404 ERROR HANDLER
 // ============================================================================
@@ -158,6 +160,28 @@ app.use((req, res) => {
       success: false,
       message: "Not found",
     });
+  }
+});
+
+// TEMPORARY DEBUG ROUTE — tanggalin pagkatapos
+app.get("/api/debug/gogo", async (req, res) => {
+  try {
+    const axios = (await import("axios")).default;
+    const { data: html } = await axios.get(
+      "https://gogoanime.by/one-piece-episode-1/",
+      {
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+          Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
+        },
+        timeout: 15000,
+      },
+    );
+    // Ibalik ang unang 3000 characters ng HTML para makita ang structure
+    res.send(`<pre>${html.substring(0, 3000)}</pre>`);
+  } catch (e) {
+    res.json({ error: e.message });
   }
 });
 

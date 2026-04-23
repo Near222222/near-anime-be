@@ -20,7 +20,10 @@
     "dotenv": "^17.2.0",
     "express": "^5.2.1",
     "image-pixels": "^2.2.2",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "puppeteer": "^24.42.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   },
   "type": "module",
   "devDependencies": {

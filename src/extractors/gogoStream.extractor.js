@@ -1,123 +1,157 @@
-import axios from "axios";
-import * as cheerio from "cheerio";
+import puppeteer from "puppeteer-extra";
+import StealthPlugin from "puppeteer-extra-plugin-stealth";
 import { GOGO_BASE } from "../utils/base_gogo.js";
 
-const REQ_HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-  Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
-  "Accept-Language": "en-US,en;q=0.9",
-  Referer: GOGO_BASE,
-};
+puppeteer.use(StealthPlugin());
+
+async function launchBrowser() {
+  return await puppeteer.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--no-first-run",
+      "--no-zygote",
+      "--single-process",
+    ],
+  });
+}
 
 export async function parseEpisodePage(episodeUrl) {
   const fullUrl = episodeUrl.startsWith("http")
     ? episodeUrl
     : `${GOGO_BASE}/${episodeUrl.replace(/^\//, "").replace(/\/$/, "")}/`;
 
-  const { data: html } = await axios.get(fullUrl, {
-    headers: REQ_HEADERS,
-    timeout: 15000,
-  });
+  console.log(`[GogoExtractor] Launching browser for: ${fullUrl}`);
 
-  const $ = cheerio.load(html);
+  const browser = await launchBrowser();
 
-  // Get post ID from download link base64
-  let postId = null;
-  let epNum = "1";
+  try {
+    const page = await browser.newPage();
 
-  const downloadHref = $("a[href*='adl=']").first().attr("href");
-  if (downloadHref) {
-    const b64Match = downloadHref.match(/[?&]adl=([A-Za-z0-9+/=%-]+)/);
-    if (b64Match) {
-      try {
-        const decoded = Buffer.from(
-          decodeURIComponent(b64Match[1]),
-          "base64",
-        ).toString("utf-8");
-        const parts = decoded.split("|");
-        if (parts.length >= 1 && /^\d+$/.test(parts[0])) {
-          postId = parts[0];
-          if (parts[1]) epNum = parts[1];
-        }
-      } catch (_) {}
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    );
+
+    // Block images/fonts para mabilis
+    await page.setRequestInterception(true);
+    page.on("request", (req) => {
+      const type = req.resourceType();
+      if (["image", "font", "stylesheet"].includes(type)) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
+
+    await page.goto(fullUrl, {
+      waitUntil: "networkidle2",
+      timeout: 30000,
+    });
+
+    // Hintayin ang iframe na mag-appear
+    try {
+      await page.waitForSelector("iframe", { timeout: 10000 });
+    } catch (_) {
+      console.warn(`[GogoExtractor] No iframe appeared within 10s`);
     }
+
+    const iframes = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll("iframe"))
+        .map((el) => el.src || el.getAttribute("data-src"))
+        .filter(Boolean)
+        .map((src) => (src.startsWith("//") ? `https:${src}` : src));
+    });
+
+    const postId = await page.evaluate(() => {
+      const match = document.body.innerHTML.match(/postid-(\d+)/);
+      return match ? match[1] : null;
+    });
+
+    const epMatch = fullUrl.match(/episode-(\d+(?:\.\d+)?)/i);
+    const epNum = epMatch ? epMatch[1] : "1";
+
+    console.log(
+      `[GogoExtractor] postId=${postId} epNum=${epNum} iframes=${iframes.length}`,
+    );
+    if (iframes.length > 0)
+      console.log(
+        `[GogoExtractor] First iframe: ${iframes[0].substring(0, 80)}`,
+      );
+
+    return { postId, epNum, iframes, fullUrl };
+  } finally {
+    await browser.close();
   }
-
-  if (!postId) {
-    const wpMatch =
-      html.match(/postid-(\d+)/) || html.match(/"post[_-]id"\s*:\s*(\d+)/i);
-    if (wpMatch) postId = wpMatch[1];
-  }
-
-  const epMatch = fullUrl.match(/episode-(\d+(?:\.\d+)?)/i);
-  if (epMatch) epNum = epMatch[1];
-
-  // Grab ALL iframes from the page directly
-  const iframes = [];
-  $("iframe").each((_, el) => {
-    const src = $(el).attr("src") || $(el).attr("data-src");
-    if (src) iframes.push(src.startsWith("//") ? `https:${src}` : src);
-  });
-
-  // Also look for src in noscript or inline scripts
-  const srcMatches = html.matchAll(
-    /["'](https?:\/\/(?:megavid|megacloud|vidsrc|watching|filemoon|streamwish|dood)[^"']+)["']/g,
-  );
-  for (const m of srcMatches) {
-    if (!iframes.includes(m[1])) iframes.push(m[1]);
-  }
-
-  console.log(
-    `[GogoExtractor] postId=${postId} epNum=${epNum} iframes=${iframes.length}`,
-  );
-  if (iframes.length > 0)
-    console.log(`[GogoExtractor] First iframe: ${iframes[0].substring(0, 80)}`);
-
-  return { postId, epNum, iframes, pageHtml: html, fullUrl };
 }
 
 export async function resolveHlsFromEmbed(embedUrl) {
   if (!embedUrl) return null;
   const url = embedUrl.startsWith("//") ? `https:${embedUrl}` : embedUrl;
 
-  let html;
+  console.log(`[GogoExtractor] Resolving HLS from: ${url.substring(0, 60)}`);
+
+  const browser = await launchBrowser();
+
   try {
-    const { data } = await axios.get(url, {
-      headers: {
-        "User-Agent": REQ_HEADERS["User-Agent"],
-        Accept: "text/html,*/*;q=0.8",
-        Referer: GOGO_BASE,
-      },
-      timeout: 15000,
-    });
-    html = typeof data === "string" ? data : JSON.stringify(data);
-  } catch (err) {
-    console.error(
-      `[GogoExtractor] Failed to fetch embed ${url.substring(0, 60)}: ${err.message}`,
+    const page = await browser.newPage();
+    let hlsUrl = null;
+
+    await page.setUserAgent(
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     );
-    return null;
-  }
 
-  const patterns = [
-    /["'`](https?:\/\/[^"'`\s]+\.m3u8[^"'`\s]{0,100})["'`]/,
-    /file\s*:\s*["'`](https?:\/\/[^"'`\s]+\.m3u8[^"'`\s]{0,100})["'`]/,
-    /file\s*:\s*["'`](https?:\/\/[^"'`\s]{20,})["'`]/,
-    /"file"\s*:\s*"(https?:\/\/[^"]+\.m3u8[^"]{0,100})"/,
-    /"sources"\s*:\s*\[\s*\{\s*"file"\s*:\s*"([^"]+)"/s,
-    /sources\s*:\s*\[.*?"file"\s*:\s*"([^"]+)"/s,
-  ];
+    // Intercept network requests para hanapin ang .m3u8
+    await page.setRequestInterception(true);
+    page.on("request", (req) => {
+      const reqUrl = req.url();
+      if (reqUrl.includes(".m3u8") && !hlsUrl) {
+        hlsUrl = reqUrl;
+        console.log(
+          `[GogoExtractor] Intercepted HLS: ${reqUrl.substring(0, 80)}`,
+        );
+      }
+      if (["image", "font", "stylesheet"].includes(req.resourceType())) {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
 
-  for (const pattern of patterns) {
-    const match = html.match(pattern);
-    if (match?.[1] && match[1].startsWith("http")) {
-      console.log(`[GogoExtractor] Found HLS: ${match[1].substring(0, 80)}`);
-      return match[1];
+    await page.goto(url, {
+      waitUntil: "networkidle2",
+      timeout: 30000,
+    });
+
+    // Kung hindi pa nakuha sa intercept, hanapin sa page source
+    if (!hlsUrl) {
+      hlsUrl = await page.evaluate(() => {
+        const html = document.documentElement.innerHTML;
+        const patterns = [
+          /["'`](https?:\/\/[^"'`\s]+\.m3u8[^"'`\s]{0,100})["'`]/,
+          /"file"\s*:\s*"(https?:\/\/[^"]+\.m3u8[^"]{0,100})"/,
+          /sources\s*:\s*\[.*?"file"\s*:\s*"([^"]+)"/s,
+        ];
+        for (const p of patterns) {
+          const m = html.match(p);
+          if (m?.[1]) return m[1];
+        }
+        return null;
+      });
     }
-  }
 
-  console.warn(`[GogoExtractor] No HLS in: ${url.substring(0, 60)}`);
-  return null;
+    if (hlsUrl) {
+      console.log(`[GogoExtractor] Found HLS: ${hlsUrl.substring(0, 80)}`);
+    } else {
+      console.warn(`[GogoExtractor] No HLS found in: ${url.substring(0, 60)}`);
+    }
+
+    return hlsUrl;
+  } finally {
+    await browser.close();
+  }
 }
 
 export async function extractGogoStream(
@@ -129,9 +163,8 @@ export async function extractGogoStream(
     console.log(
       `[GogoExtractor] ${episodeUrl} | server=${server} type=${type}`,
     );
-    const { iframes, postId, epNum } = await parseEpisodePage(episodeUrl);
+    const { iframes } = await parseEpisodePage(episodeUrl);
 
-    // Try each iframe until one returns HLS
     for (const iframe of iframes) {
       const hlsUrl = await resolveHlsFromEmbed(iframe);
       if (hlsUrl) {
