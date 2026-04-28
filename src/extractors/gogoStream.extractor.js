@@ -4,6 +4,11 @@ import { GOGO_BASE } from "../utils/base_gogo.js";
 
 puppeteer.use(StealthPlugin());
 
+// Dedup map — concurrent requests for the same URL share one browser run
+const pendingPages = new Map();
+
+const IS_WINDOWS = process.platform === "win32";
+
 async function launchBrowser() {
   return await puppeteer.launch({
     headless: true,
@@ -13,17 +18,17 @@ async function launchBrowser() {
       "--disable-dev-shm-usage",
       "--disable-gpu",
       "--no-first-run",
-      "--no-zygote",
-      "--single-process",
+      // --single-process crashes Chromium on Windows and causes frame detach
+      // errors — only add it on Linux (e.g. Docker/Render)
+      ...(!IS_WINDOWS ? ["--no-zygote", "--single-process"] : []),
+      "--disable-web-security",
+      "--disable-features=IsolateOrigins,site-per-process",
     ],
   });
 }
 
-export async function parseEpisodePage(episodeUrl) {
-  const fullUrl = episodeUrl.startsWith("http")
-    ? episodeUrl
-    : `${GOGO_BASE}/${episodeUrl.replace(/^\//, "").replace(/\/$/, "")}/`;
-
+// Internal implementation — always receives a fully-qualified URL
+async function _parseEpisodePage(fullUrl) {
   console.log(`[GogoExtractor] Launching browser for: ${fullUrl}`);
 
   const browser = await launchBrowser();
@@ -46,10 +51,27 @@ export async function parseEpisodePage(episodeUrl) {
       }
     });
 
-    await page.goto(fullUrl, {
-      waitUntil: "networkidle2",
-      timeout: 30000,
-    });
+    // domcontentloaded is faster and more stable than networkidle2 on
+    // ad-heavy sites where frames get injected/removed rapidly.
+    // Wrapped in try/catch because anitaku.at's JS redirects can detach
+    // the frame mid-navigation — we can usually still read the DOM after.
+    try {
+      await page.goto(fullUrl, {
+        waitUntil: "domcontentloaded",
+        timeout: 30000,
+      });
+    } catch (navErr) {
+      if (navErr.message.includes("detached")) {
+        console.warn(
+          `[GogoExtractor] Frame detached during navigation (expected on redirect) — continuing`,
+        );
+      } else {
+        throw navErr; // rethrow real errors (timeout, net::ERR_*)
+      }
+    }
+
+    // Give dynamic content a moment to inject iframes
+    await new Promise((r) => setTimeout(r, 2500));
 
     // Hintayin ang iframe na mag-appear
     try {
@@ -58,17 +80,33 @@ export async function parseEpisodePage(episodeUrl) {
       console.warn(`[GogoExtractor] No iframe appeared within 10s`);
     }
 
-    const iframes = await page.evaluate(() => {
-      return Array.from(document.querySelectorAll("iframe"))
-        .map((el) => el.src || el.getAttribute("data-src"))
-        .filter(Boolean)
-        .map((src) => (src.startsWith("//") ? `https:${src}` : src));
-    });
+    // Guard against frames being detached between waitForSelector and evaluate
+    let iframes = [];
+    try {
+      iframes = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll("iframe"))
+          .map((el) => el.src || el.getAttribute("data-src"))
+          .filter(Boolean)
+          .map((src) => (src.startsWith("//") ? `https:${src}` : src));
+      });
+    } catch (evalErr) {
+      console.warn(
+        `[GogoExtractor] Frame detached during iframe eval: ${evalErr.message}`,
+      );
+      // iframes stays []
+    }
 
-    const postId = await page.evaluate(() => {
-      const match = document.body.innerHTML.match(/postid-(\d+)/);
-      return match ? match[1] : null;
-    });
+    let postId = null;
+    try {
+      postId = await page.evaluate(() => {
+        const match = document.body.innerHTML.match(/postid-(\d+)/);
+        return match ? match[1] : null;
+      });
+    } catch (evalErr) {
+      console.warn(
+        `[GogoExtractor] Frame detached during postId eval: ${evalErr.message}`,
+      );
+    }
 
     const epMatch = fullUrl.match(/episode-(\d+(?:\.\d+)?)/i);
     const epNum = epMatch ? epMatch[1] : "1";
@@ -85,6 +123,25 @@ export async function parseEpisodePage(episodeUrl) {
   } finally {
     await browser.close();
   }
+}
+
+// Public export — deduplicates concurrent calls for the same URL
+export async function parseEpisodePage(episodeUrl) {
+  const fullUrl = episodeUrl.startsWith("http")
+    ? episodeUrl
+    : `${GOGO_BASE}/${episodeUrl.replace(/^\//, "").replace(/\/$/, "")}/`;
+
+  if (pendingPages.has(fullUrl)) {
+    console.log(`[GogoExtractor] Reusing in-flight request for: ${fullUrl}`);
+    return pendingPages.get(fullUrl);
+  }
+
+  const promise = _parseEpisodePage(fullUrl).finally(() => {
+    pendingPages.delete(fullUrl);
+  });
+
+  pendingPages.set(fullUrl, promise);
+  return promise;
 }
 
 export async function resolveHlsFromEmbed(embedUrl) {
@@ -120,26 +177,45 @@ export async function resolveHlsFromEmbed(embedUrl) {
       }
     });
 
-    await page.goto(url, {
-      waitUntil: "networkidle2",
-      timeout: 30000,
-    });
+    try {
+      await page.goto(url, {
+        waitUntil: "domcontentloaded",
+        timeout: 30000,
+      });
+    } catch (navErr) {
+      if (navErr.message.includes("detached")) {
+        console.warn(
+          `[GogoExtractor] Frame detached during embed navigation — continuing`,
+        );
+      } else {
+        throw navErr;
+      }
+    }
+
+    // Give the embed player time to fire its network requests
+    await new Promise((r) => setTimeout(r, 2500));
 
     // Kung hindi pa nakuha sa intercept, hanapin sa page source
     if (!hlsUrl) {
-      hlsUrl = await page.evaluate(() => {
-        const html = document.documentElement.innerHTML;
-        const patterns = [
-          /["'`](https?:\/\/[^"'`\s]+\.m3u8[^"'`\s]{0,100})["'`]/,
-          /"file"\s*:\s*"(https?:\/\/[^"]+\.m3u8[^"]{0,100})"/,
-          /sources\s*:\s*\[.*?"file"\s*:\s*"([^"]+)"/s,
-        ];
-        for (const p of patterns) {
-          const m = html.match(p);
-          if (m?.[1]) return m[1];
-        }
-        return null;
-      });
+      try {
+        hlsUrl = await page.evaluate(() => {
+          const html = document.documentElement.innerHTML;
+          const patterns = [
+            /["'`](https?:\/\/[^"'`\s]+\.m3u8[^"'`\s]{0,100})["'`]/,
+            /"file"\s*:\s*"(https?:\/\/[^"]+\.m3u8[^"]{0,100})"/,
+            /sources\s*:\s*\[.*?"file"\s*:\s*"([^"]+)"/s,
+          ];
+          for (const p of patterns) {
+            const m = html.match(p);
+            if (m?.[1]) return m[1];
+          }
+          return null;
+        });
+      } catch (evalErr) {
+        console.warn(
+          `[GogoExtractor] Frame detached during HLS eval: ${evalErr.message}`,
+        );
+      }
     }
 
     if (hlsUrl) {

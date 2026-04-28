@@ -6,17 +6,17 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 import { createApiRoutes } from "./src/routes/apiRoutes.js";
-import { getGogoEmbed } from "./src/controllers/gogoStream.controller.js";
+import {
+  getGogoEmbed,
+  getGogoStreamInfo,
+} from "./src/controllers/gogoStream.controller.js";
+import {
+  searchPahe,
+  getPaheEpisodes,
+  getPaheStream,
+  getStreamByName,
+} from "./src/controllers/animepahe.controller.js";
 
-// ============================================================================
-// IMPORT LOGGING MIDDLEWARE (Optional but recommended)
-// ============================================================================
-// Uncomment these if you created the logging middleware file
-// import { logRequest, errorHandler } from './src/middleware/logging.middleware.js';
-
-// ============================================================================
-// CONFIGURATION
-// ============================================================================
 dotenv.config();
 
 const app = express();
@@ -27,25 +27,17 @@ const __filename = fileURLToPath(import.meta.url);
 const publicDir = path.join(dirname(__filename), "public");
 const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(",");
 
-// ============================================================================
-// LOGGING SETUP
-// ============================================================================
 const log = {
   info: (msg) => console.log(`[${new Date().toISOString()}] [INFO] ${msg}`),
   warn: (msg) => console.log(`[${new Date().toISOString()}] [WARN] ${msg}`),
   error: (msg) => console.error(`[${new Date().toISOString()}] [ERROR] ${msg}`),
   debug: (msg) => {
-    if (DEBUG) {
-      console.log(`[${new Date().toISOString()}] [DEBUG] ${msg}`);
-    }
+    if (DEBUG) console.log(`[${new Date().toISOString()}] [DEBUG] ${msg}`);
   },
 };
 
 log.info(`Starting server in ${NODE_ENV} mode`);
 
-// ============================================================================
-// CORS CONFIGURATION
-// ============================================================================
 app.use(
   cors({
     origin: allowedOrigins?.includes("*") ? "*" : allowedOrigins || [],
@@ -53,11 +45,8 @@ app.use(
   }),
 );
 
-// Custom CORS middleware with logging
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  log.debug(`CORS check - Origin: ${origin}`);
-
   if (
     !allowedOrigins ||
     allowedOrigins.includes("*") ||
@@ -68,134 +57,84 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
     return next();
   }
-
   log.warn(`CORS blocked - Origin not allowed: ${origin}`);
   res
     .status(403)
     .json({ success: false, message: "Forbidden: Origin not allowed" });
 });
 
-// ============================================================================
-// REQUEST LOGGING MIDDLEWARE
-// ============================================================================
 app.use((req, res, next) => {
   const startTime = Date.now();
   log.info(`${req.method} ${req.path}`);
-
-  // Capture response send
   const originalSend = res.send;
   res.send = function (data) {
     const duration = Date.now() - startTime;
     log.info(`${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`);
     return originalSend.call(this, data);
   };
-
   next();
 });
 
-// ============================================================================
-// OPTIONAL: LOAD LOGGING MIDDLEWARE (if file exists)
-// ============================================================================
-// If you created the logging.middleware.js file, uncomment below:
-// app.use(logRequest);
-
-// ============================================================================
-// STATIC FILES
-// ============================================================================
 app.use(express.static(publicDir, { redirect: false }));
 log.info(`Serving static files from: ${publicDir}`);
 
-// ============================================================================
-// BODY PARSER & JSON
-// ============================================================================
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// ============================================================================
-// RESPONSE HELPERS
-// ============================================================================
-const jsonResponse = (res, data, status = 200) => {
-  log.debug(`Sending success response - Status: ${status}`);
-  return res.status(status).json({ success: true, results: data });
-};
+const jsonResponse = (res, data, status = 200) =>
+  res.status(status).json({ success: true, results: data });
+const jsonError = (res, message = "Internal server error", status = 500) =>
+  res.status(status).json({ success: false, message });
 
-const jsonError = (res, message = "Internal server error", status = 500) => {
-  log.error(`Sending error response - Status: ${status}, Message: ${message}`);
-  return res.status(status).json({ success: false, message });
-};
-
-// ============================================================================
-// HEALTH CHECK ENDPOINT (Useful for monitoring)
-// ============================================================================
+// ── Health check ──────────────────────────────────────────────────────────────
 app.get("/health", (req, res) => {
-  const health = {
+  res.status(200).json({
     status: "healthy",
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     environment: NODE_ENV,
-  };
-  log.debug(`Health check requested`);
-  res.status(200).json(health);
+  });
 });
 
-// ============================================================================
-// API ROUTES
-// ============================================================================
+// ── HiAnime-based routes (from apiRoutes.js) ──────────────────────────────────
 log.info("Setting up API routes...");
 createApiRoutes(app, jsonResponse, jsonError);
 log.info("API routes configured");
 
+// ── Gogoanime routes (Puppeteer) ──────────────────────────────────────────────
 app.get("/api/gogo/embed", getGogoEmbed);
-// ============================================================================
-// 404 ERROR HANDLER
-// ============================================================================
+app.get("/api/gogo/stream", getGogoStreamInfo);
+
+// ── AnimePahe routes (Primary stream source) ──────────────────────────────────
+// Search anime → GET /api/pahe/search?q=bleach
+app.get("/api/pahe/search", searchPahe);
+
+// Episode list → GET /api/pahe/episodes?session=xxx&page=1
+app.get("/api/pahe/episodes", getPaheEpisodes);
+
+// Stream by session → GET /api/pahe/stream?session=xxx&ep=1&quality=1080
+app.get("/api/pahe/stream", getPaheStream);
+
+// Drop-in for old HiAnime /api/stream → GET /api/stream?name=bleach&ep=1&quality=1080
+app.get("/api/stream", getStreamByName);
+
+// ── 404 handler ───────────────────────────────────────────────────────────────
 app.use((req, res) => {
   log.warn(`404 Not Found - ${req.method} ${req.path}`);
   const filePath = path.join(publicDir, "404.html");
-
   if (fs.existsSync(filePath)) {
     res.status(404).sendFile(filePath);
   } else {
-    res.status(404).json({
-      success: false,
-      message: "Not found",
-    });
+    res.status(404).json({ success: false, message: "Not found" });
   }
 });
 
-// TEMPORARY DEBUG ROUTE — tanggalin pagkatapos
-app.get("/api/debug/gogo", async (req, res) => {
-  try {
-    const axios = (await import("axios")).default;
-    const { data: html } = await axios.get(
-      "https://gogoanime.by/one-piece-episode-1/",
-      {
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-          Accept: "text/html,application/xhtml+xml,*/*;q=0.8",
-        },
-        timeout: 15000,
-      },
-    );
-    // Ibalik ang unang 3000 characters ng HTML para makita ang structure
-    res.send(`<pre>${html.substring(0, 3000)}</pre>`);
-  } catch (e) {
-    res.json({ error: e.message });
-  }
-});
-
-// ============================================================================
-// GLOBAL ERROR HANDLER
-// ============================================================================
+// ── Global error handler ──────────────────────────────────────────────────────
 app.use((err, req, res, next) => {
   log.error(`Unhandled Error - ${err.message}`);
-  log.error(`Stack: ${err.stack}`);
-
   const status = err.status || 500;
   const message =
     NODE_ENV === "production" ? "Internal server error" : err.message;
-
   res.status(status).json({
     success: false,
     message,
@@ -203,52 +142,31 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ============================================================================
-// OPTIONAL: LOAD ERROR HANDLER MIDDLEWARE (if file exists)
-// ============================================================================
-// If you created the logging.middleware.js file, uncomment below:
-// app.use(errorHandler);
-
-// ============================================================================
-// GRACEFUL SHUTDOWN
-// ============================================================================
-process.on("SIGTERM", () => {
-  log.info("SIGTERM received, shutting down gracefully...");
+// ── Graceful shutdown ─────────────────────────────────────────────────────────
+const shutdown = (signal) => {
+  log.info(`${signal} received, shutting down gracefully...`);
   server.close(() => {
     log.info("Server closed");
     process.exit(0);
   });
-});
+};
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
-process.on("SIGINT", () => {
-  log.info("SIGINT received, shutting down gracefully...");
-  server.close(() => {
-    log.info("Server closed");
-    process.exit(0);
-  });
-});
-
-// ============================================================================
-// START SERVER
-// ============================================================================
+// ── Start server ──────────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
   log.info(`✅ Server started successfully`);
   log.info(`🌍 Listening at http://localhost:${PORT}`);
   log.info(`📁 Public directory: ${publicDir}`);
   log.info(`🔧 Environment: ${NODE_ENV}`);
-  if (allowedOrigins) {
-    log.info(`🔐 CORS origins: ${allowedOrigins.join(", ")}`);
-  }
+  if (allowedOrigins) log.info(`🔐 CORS origins: ${allowedOrigins.join(", ")}`);
 });
 
-// Handle server errors
 server.on("error", (err) => {
   if (err.code === "EADDRINUSE") {
     log.error(`Port ${PORT} is already in use`);
     process.exit(1);
-  } else {
-    log.error(`Server error: ${err.message}`);
-  }
+  } else log.error(`Server error: ${err.message}`);
 });
 
 export default app;
